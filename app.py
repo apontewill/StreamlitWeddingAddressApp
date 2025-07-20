@@ -3,10 +3,13 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
+import sqlite3
 from pathlib import Path
 import hashlib
+
 from supabase import create_client, Client
 import re
+
 
 # Page configuration
 st.set_page_config(
@@ -16,78 +19,107 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS
+# Get admin credentials from Streamlit secrets
+def get_admin_credentials():
+    """Get admin credentials from Streamlit secrets"""
+    try:
+        username = st.secrets["ADMIN_USERNAME"]
+        password = st.secrets["ADMIN_PASSWORD"]
+        return username, password
+    except KeyError as e:
+        st.error(f"Missing secret: {e}. Please configure ADMIN_USERNAME and ADMIN_PASSWORD in .streamlit/secrets.toml")
+        st.stop()
+    except Exception as e:
+        st.error(f"Error reading secrets: {e}")
+        st.stop()
+
+# Custom CSS for better styling
 st.markdown("""
 <style>
     .main-header {
+        font-size: 3rem;
+        font-weight: bold;
         text-align: center;
         color: #FF6B9D;
-        font-size: 3rem;
-        margin-bottom: 0.5rem;
-        font-weight: bold;
+        margin-bottom: 2rem;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
     }
     .sub-header {
+        font-size: 1.5rem;
+        color: #4A4A4A;
         text-align: center;
-        color: #666;
-        font-size: 1.2rem;
         margin-bottom: 2rem;
     }
     .form-container {
-        background-color: #f9f9f9;
+        background-color: #f8f9fa;
         padding: 2rem;
-        border-radius: 10px;
+        border-radius: 15px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         margin: 1rem 0;
     }
-    .success-container {
+    .success-message {
         background-color: #d4edda;
-        border: 1px solid #c3e6cb;
+        color: #155724;
+        padding: 1rem;
         border-radius: 10px;
-        padding: 2rem;
-        text-align: center;
-        margin: 2rem 0;
+        border: 1px solid #c3e6cb;
+        margin: 1rem 0;
     }
     .error-message {
         background-color: #f8d7da;
-        border: 1px solid #f5c6cb;
-        border-radius: 5px;
+        color: #721c24;
         padding: 1rem;
+        border-radius: 10px;
+        border: 1px solid #f5c6cb;
         margin: 1rem 0;
     }
-    .admin-login {
-        max-width: 400px;
-        margin: 0 auto;
-        background-color: #f8f9fa;
-        padding: 2rem;
-        border-radius: 10px;
-        border: 1px solid #dee2e6;
+    .success-screen {
+        background-color: #d4edda;
+        padding: 3rem;
+        border-radius: 20px;
+        border: 2px solid #c3e6cb;
+        margin: 2rem 0;
+        text-align: center;
     }
-    .stSelectbox > div > div > select {
-        border-radius: 5px;
+    .success-icon {
+        font-size: 4rem;
+        color: #28a745;
+        margin-bottom: 1rem;
     }
-    .stTextInput > div > div > input {
-        border-radius: 5px;
+    .success-title {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #155724;
+        margin-bottom: 1rem;
+    }
+    .success-text {
+        font-size: 1.2rem;
+        color: #155724;
+        margin-bottom: 2rem;
     }
     .stButton > button {
         background-color: #FF6B9D;
         color: white;
-        border-radius: 10px;
-        border: none;
-        padding: 0.5rem 1rem;
+        border-radius: 25px;
+        padding: 0.5rem 2rem;
         font-weight: bold;
-        transition: all 0.3s;
+        border: none;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     .stButton > button:hover {
         background-color: #E55A8A;
-        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
     }
-    .metric-container {
-        background-color: #f8f9fa;
-        padding: 1rem;
+    .admin-login {
+        background-color: #fff3cd;
+        padding: 1.5rem;
         border-radius: 10px;
-        border-left: 4px solid #FF6B9D;
+        border: 1px solid #ffeaa7;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
+
 
 # Initialize Supabase connection
 @st.cache_resource
@@ -205,6 +237,7 @@ def save_guest_data(guest_data):
         
         # Insert data using Supabase
         result = supabase.table("guests").insert(data).execute()
+
         
         return True
     except Exception as e:
@@ -215,6 +248,7 @@ def save_guest_data(guest_data):
 def get_all_guests():
     """Retrieve all guest data from Supabase database"""
     try:
+
         supabase = init_supabase()
         
         # Get all guests ordered by submission_date descending
@@ -234,39 +268,32 @@ def get_all_guests():
         return pd.DataFrame()
 
 def validate_form(guest_data):
-    """Validate the guest form data"""
+    """Validate form data"""
     errors = []
     
     if not guest_data['first_name'].strip():
         errors.append("First name is required")
-    
     if not guest_data['last_name'].strip():
         errors.append("Last name is required")
-    
     if not guest_data['address_line1'].strip():
-        errors.append("Address line 1 is required")
-    
+        errors.append("Address is required")
     if not guest_data['city'].strip():
         errors.append("City is required")
-    
-    if not guest_data['state']:
+    if not guest_data['state'].strip():
         errors.append("State is required")
-    
     if not guest_data['zip_code'].strip():
         errors.append("ZIP code is required")
     
-    # Email validation (if provided)
-    if guest_data['email'].strip():
-        import re
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(email_pattern, guest_data['email']):
-            errors.append("Please enter a valid email address")
+    # Email validation
+    if guest_data['email'] and '@' not in guest_data['email']:
+        errors.append("Please enter a valid email address")
     
     return errors
 
 def delete_guest_entry(guest_id):
     """Delete a guest entry from the Supabase database"""
     try:
+
         supabase = init_supabase()
         
         # Delete the guest entry by ID
@@ -277,29 +304,8 @@ def delete_guest_entry(guest_id):
         st.error(f"Error deleting entry: {str(e)}")
         return False
 
-def show_success_screen():
-    """Display success message after form submission"""
-    st.markdown('<div class="success-container">', unsafe_allow_html=True)
-    st.markdown("# 🎉 Thank You!")
-    st.markdown(f"### Hi {st.session_state.get('submitted_guest_name', '')}!")
-    st.markdown("Your address has been successfully submitted.")
-    st.markdown("We'll be in touch soon with your wedding invitation! 💌")
-    
-    if st.button("✨ Submit Another Address", use_container_width=True):
-        # Reset form state
-        st.session_state['form_submitted'] = False
-        st.session_state['submitted_guest_name'] = ""
-        st.rerun()
-    
-    st.markdown('</div>', unsafe_allow_html=True)
-
 # Main app
 def main():
-    # Initialize database
-    if not init_database():
-        st.error("Failed to initialize database. Please check your configuration.")
-        st.stop()
-    
     # Header
     st.markdown('<h1 class="main-header">💒 Wedding Guest Address Collection</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Please provide your address so we can send you your wedding invitation!</p>', unsafe_allow_html=True)
@@ -346,6 +352,25 @@ def main():
             show_export_options()
         else:
             st.error("🔒 Access denied. Please login as admin to export data.")
+
+def show_success_screen():
+    """Display success screen after form submission"""
+    st.markdown('<div class="success-screen">', unsafe_allow_html=True)
+    st.markdown('<div class="success-icon">🎉</div>', unsafe_allow_html=True)
+    st.markdown('<div class="success-title">Thank You!</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="success-text">Hi {st.session_state.submitted_guest_name}!<br><br>Your address has been successfully submitted.<br>We\'ll be in touch soon with your wedding invitation!</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Add some spacing
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Button to submit another address
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("📝 Submit Another Address", use_container_width=True):
+            st.session_state['form_submitted'] = False
+            st.session_state['submitted_guest_name'] = ""
+            st.rerun()
 
 def show_guest_form():
     """Display the guest address collection form"""
@@ -455,7 +480,7 @@ def show_responses():
         with col1:
             search_name = st.text_input("Search by name", placeholder="Enter first or last name")
         with col2:
-            state_filter = st.selectbox("Filter by state", ["All"] + sorted(list(df['state'].unique())))
+            state_filter = st.selectbox("Filter by state", ["All"] + list(df['state'].unique()))
         
         # Apply filters
         filtered_df = df.copy()
@@ -553,6 +578,7 @@ def show_export_options():
     
     with col2:
         st.subheader("📊 Excel Export")
+
         # Create Excel file in memory
         from io import BytesIO
         output = BytesIO()
@@ -567,6 +593,10 @@ def show_export_options():
             file_name=f"wedding_guests_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+    
+    # Clean up temporary file
+    if os.path.exists('temp_wedding_guests.xlsx'):
+        os.remove('temp_wedding_guests.xlsx')
     
     # Data preview
     st.subheader("📋 Data Preview")
