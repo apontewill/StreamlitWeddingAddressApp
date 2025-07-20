@@ -7,6 +7,10 @@ import sqlite3
 from pathlib import Path
 import hashlib
 
+from supabase import create_client, Client
+import re
+
+
 # Page configuration
 st.set_page_config(
     page_title="Wedding Guest Addresses",
@@ -116,35 +120,66 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
+# Initialize Supabase connection
+@st.cache_resource
+def init_supabase():
+    """Initialize connection to Supabase"""
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        return create_client(url, key)
+    except KeyError as e:
+        st.error(f"Missing secret: {e}. Please configure SUPABASE_URL and SUPABASE_KEY in secrets.")
+        st.stop()
+    except Exception as e:
+        st.error(f"Failed to connect to Supabase: {e}")
+        st.stop()
+
+def get_admin_credentials():
+    """Get admin credentials from Streamlit secrets"""
+    try:
+        username = st.secrets["ADMIN_USERNAME"]
+        password = st.secrets["ADMIN_PASSWORD"]
+        return username, password
+    except KeyError as e:
+        st.error(f"Missing secret: {e}. Please configure ADMIN_USERNAME and ADMIN_PASSWORD in secrets.")
+        st.stop()
+
 # Initialize database
 def init_database():
-    """Initialize SQLite database for storing guest addresses"""
-    conn = sqlite3.connect('wedding_guests.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS guests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            first_name TEXT NOT NULL,
-            last_name TEXT NOT NULL,
-            email TEXT,
-            phone TEXT,
-            address_line1 TEXT NOT NULL,
-            address_line2 TEXT,
-            city TEXT NOT NULL,
-            state TEXT NOT NULL,
-            zip_code TEXT NOT NULL,
-            country TEXT DEFAULT 'USA',
-            rsvp_status TEXT DEFAULT 'Pending',
-            submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-# Initialize the database
-init_database()
+    """Initialize Supabase database for storing guest addresses"""
+    try:
+        supabase = init_supabase()
+        
+        # Create table using Supabase RPC (SQL function)
+        # Note: In Supabase, you typically create tables through the dashboard or SQL editor
+        # This is just to ensure the table structure is as expected
+        
+        # Check if the table exists by trying to query it
+        result = supabase.table("guests").select("id").limit(1).execute()
+        return True
+    except Exception as e:
+        # If table doesn't exist, provide instructions
+        st.error(f"Please ensure the 'guests' table exists in your Supabase database. You can create it using the SQL editor in Supabase dashboard with this SQL:")
+        st.code('''
+CREATE TABLE IF NOT EXISTS guests (
+    id SERIAL PRIMARY KEY,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100) NOT NULL,
+    email VARCHAR(255),
+    phone VARCHAR(20),
+    address_line1 VARCHAR(255) NOT NULL,
+    address_line2 VARCHAR(255),
+    city VARCHAR(100) NOT NULL,
+    state VARCHAR(10) NOT NULL,
+    zip_code VARCHAR(20) NOT NULL,
+    country VARCHAR(50) DEFAULT 'USA',
+    rsvp_status VARCHAR(20) DEFAULT 'Pending',
+    submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+        ''')
+        return False
 
 def check_admin_credentials(username, password):
     """Check if provided credentials match admin credentials"""
@@ -182,43 +217,52 @@ def admin_logout():
     st.rerun()
 
 def save_guest_data(guest_data):
-    """Save guest data to SQLite database"""
+    """Save guest data to Supabase database"""
     try:
-        conn = sqlite3.connect('wedding_guests.db')
-        cursor = conn.cursor()
+        supabase = init_supabase()
         
-        cursor.execute('''
-            INSERT INTO guests (
-                first_name, last_name, email, phone, address_line1, address_line2,
-                city, state, zip_code, country
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            guest_data['first_name'],
-            guest_data['last_name'],
-            guest_data['email'],
-            guest_data['phone'],
-            guest_data['address_line1'],
-            guest_data['address_line2'],
-            guest_data['city'],
-            guest_data['state'],
-            guest_data['zip_code'],
-            guest_data['country']
-        ))
+        # Prepare data for insertion
+        data = {
+            "first_name": guest_data['first_name'],
+            "last_name": guest_data['last_name'],
+            "email": guest_data['email'] if guest_data['email'] else None,
+            "phone": guest_data['phone'] if guest_data['phone'] else None,
+            "address_line1": guest_data['address_line1'],
+            "address_line2": guest_data['address_line2'] if guest_data['address_line2'] else None,
+            "city": guest_data['city'],
+            "state": guest_data['state'],
+            "zip_code": guest_data['zip_code'],
+            "country": guest_data['country']
+        }
         
-        conn.commit()
-        conn.close()
+        # Insert data using Supabase
+        result = supabase.table("guests").insert(data).execute()
+
+        
         return True
     except Exception as e:
         st.error(f"Error saving data: {str(e)}")
         return False
 
+@st.cache_data(ttl=60)  # Cache for 1 minute
 def get_all_guests():
-    """Retrieve all guest data from database"""
+    """Retrieve all guest data from Supabase database"""
     try:
-        conn = sqlite3.connect('wedding_guests.db')
-        df = pd.read_sql_query("SELECT * FROM guests ORDER BY submission_date DESC", conn)
-        conn.close()
-        return df
+
+        supabase = init_supabase()
+        
+        # Get all guests ordered by submission_date descending
+        result = supabase.table("guests").select("*").order("submission_date", desc=True).execute()
+        
+        # Convert to DataFrame
+        if result.data:
+            df = pd.DataFrame(result.data)
+            # Convert submission_date to datetime if it exists
+            if 'submission_date' in df.columns:
+                df['submission_date'] = pd.to_datetime(df['submission_date'])
+            return df
+        else:
+            return pd.DataFrame()
     except Exception as e:
         st.error(f"Error retrieving data: {str(e)}")
         return pd.DataFrame()
@@ -247,14 +291,14 @@ def validate_form(guest_data):
     return errors
 
 def delete_guest_entry(guest_id):
-    """Delete a guest entry from the database"""
+    """Delete a guest entry from the Supabase database"""
     try:
-        conn = sqlite3.connect('wedding_guests.db')
-        cursor = conn.cursor()
+
+        supabase = init_supabase()
         
-        cursor.execute("DELETE FROM guests WHERE id = ?", (guest_id,))
-        conn.commit()
-        conn.close()
+        # Delete the guest entry by ID
+        result = supabase.table("guests").delete().eq("id", guest_id).execute()
+        
         return True
     except Exception as e:
         st.error(f"Error deleting entry: {str(e)}")
@@ -427,7 +471,8 @@ def show_responses():
         with col1:
             st.metric("Total Guests", len(df))
         with col2:
-            st.metric("Total Responses", len(df))
+            states_count = int(df['state'].nunique())
+            st.metric("States Represented", states_count)
         
         # Filter options
         st.subheader("Filter Responses")
@@ -533,13 +578,14 @@ def show_export_options():
     
     with col2:
         st.subheader("📊 Excel Export")
-        # Create Excel file
-        output = pd.ExcelWriter('temp_wedding_guests.xlsx', engine='openpyxl')
-        df.to_excel(output, index=False, sheet_name='Guest List')
-        output.close()
+
+        # Create Excel file in memory
+        from io import BytesIO
+        output = BytesIO()
         
-        with open('temp_wedding_guests.xlsx', 'rb') as f:
-            excel_data = f.read()
+        # Write Excel data
+        df.to_excel(output, index=False, sheet_name='Guest List', engine='openpyxl')
+        excel_data = output.getvalue()
         
         st.download_button(
             label="Download Excel",
