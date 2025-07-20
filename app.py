@@ -3,9 +3,10 @@ import pandas as pd
 import json
 import os
 from datetime import datetime
-import sqlite3
 from pathlib import Path
 import hashlib
+import psycopg2
+from urllib.parse import urlparse
 
 # Page configuration
 st.set_page_config(
@@ -15,7 +16,88 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Get admin credentials from Streamlit secrets
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        text-align: center;
+        color: #FF6B9D;
+        font-size: 3rem;
+        margin-bottom: 0.5rem;
+        font-weight: bold;
+    }
+    .sub-header {
+        text-align: center;
+        color: #666;
+        font-size: 1.2rem;
+        margin-bottom: 2rem;
+    }
+    .form-container {
+        background-color: #f9f9f9;
+        padding: 2rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+    }
+    .success-container {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 10px;
+        padding: 2rem;
+        text-align: center;
+        margin: 2rem 0;
+    }
+    .error-message {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        border-radius: 5px;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+    .admin-login {
+        max-width: 400px;
+        margin: 0 auto;
+        background-color: #f8f9fa;
+        padding: 2rem;
+        border-radius: 10px;
+        border: 1px solid #dee2e6;
+    }
+    .stSelectbox > div > div > select {
+        border-radius: 5px;
+    }
+    .stTextInput > div > div > input {
+        border-radius: 5px;
+    }
+    .stButton > button {
+        background-color: #FF6B9D;
+        color: white;
+        border-radius: 10px;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+        transition: all 0.3s;
+    }
+    .stButton > button:hover {
+        background-color: #E55A8A;
+        transform: translateY(-2px);
+    }
+    .metric-container {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 4px solid #FF6B9D;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Get credentials from Streamlit secrets
+def get_database_url():
+    """Get database URL from Streamlit secrets"""
+    try:
+        return st.secrets["DATABASE_URL"]
+    except KeyError:
+        st.error("Missing DATABASE_URL in secrets. Please configure your Supabase database URL.")
+        st.stop()
+
 def get_admin_credentials():
     """Get admin credentials from Streamlit secrets"""
     try:
@@ -23,128 +105,56 @@ def get_admin_credentials():
         password = st.secrets["ADMIN_PASSWORD"]
         return username, password
     except KeyError as e:
-        st.error(f"Missing secret: {e}. Please configure ADMIN_USERNAME and ADMIN_PASSWORD in .streamlit/secrets.toml")
-        st.stop()
-    except Exception as e:
-        st.error(f"Error reading secrets: {e}")
+        st.error(f"Missing secret: {e}. Please configure ADMIN_USERNAME and ADMIN_PASSWORD in secrets.")
         st.stop()
 
-# Custom CSS for better styling
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem;
-        font-weight: bold;
-        text-align: center;
-        color: #FF6B9D;
-        margin-bottom: 2rem;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
-    }
-    .sub-header {
-        font-size: 1.5rem;
-        color: #4A4A4A;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .form-container {
-        background-color: #f8f9fa;
-        padding: 2rem;
-        border-radius: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        margin: 1rem 0;
-    }
-    .success-message {
-        background-color: #d4edda;
-        color: #155724;
-        padding: 1rem;
-        border-radius: 10px;
-        border: 1px solid #c3e6cb;
-        margin: 1rem 0;
-    }
-    .error-message {
-        background-color: #f8d7da;
-        color: #721c24;
-        padding: 1rem;
-        border-radius: 10px;
-        border: 1px solid #f5c6cb;
-        margin: 1rem 0;
-    }
-    .success-screen {
-        background-color: #d4edda;
-        padding: 3rem;
-        border-radius: 20px;
-        border: 2px solid #c3e6cb;
-        margin: 2rem 0;
-        text-align: center;
-    }
-    .success-icon {
-        font-size: 4rem;
-        color: #28a745;
-        margin-bottom: 1rem;
-    }
-    .success-title {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #155724;
-        margin-bottom: 1rem;
-    }
-    .success-text {
-        font-size: 1.2rem;
-        color: #155724;
-        margin-bottom: 2rem;
-    }
-    .stButton > button {
-        background-color: #FF6B9D;
-        color: white;
-        border-radius: 25px;
-        padding: 0.5rem 2rem;
-        font-weight: bold;
-        border: none;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    .stButton > button:hover {
-        background-color: #E55A8A;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
-    }
-    .admin-login {
-        background-color: #fff3cd;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border: 1px solid #ffeaa7;
-        margin: 1rem 0;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Database connection
+def get_db_connection():
+    """Get database connection"""
+    try:
+        database_url = get_database_url()
+        return psycopg2.connect(database_url)
+    except Exception as e:
+        st.error(f"Failed to connect to database: {e}")
+        st.stop()
 
 # Initialize database
 def init_database():
-    """Initialize SQLite database for storing guest addresses"""
-    conn = sqlite3.connect('wedding_guests.db')
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS guests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            first_name TEXT NOT NULL,
-            last_name TEXT NOT NULL,
-            email TEXT,
-            phone TEXT,
-            address_line1 TEXT NOT NULL,
-            address_line2 TEXT,
-            city TEXT NOT NULL,
-            state TEXT NOT NULL,
-            zip_code TEXT NOT NULL,
-            country TEXT DEFAULT 'USA',
-            rsvp_status TEXT DEFAULT 'Pending',
-            submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-# Initialize the database
-init_database()
+    """Initialize PostgreSQL database for storing guest addresses"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS guests (
+                id SERIAL PRIMARY KEY,
+                first_name VARCHAR(100) NOT NULL,
+                last_name VARCHAR(100) NOT NULL,
+                email VARCHAR(255),
+                phone VARCHAR(20),
+                address_line1 VARCHAR(255) NOT NULL,
+                address_line2 VARCHAR(255),
+                city VARCHAR(100) NOT NULL,
+                state VARCHAR(10) NOT NULL,
+                zip_code VARCHAR(20) NOT NULL,
+                country VARCHAR(50) DEFAULT 'USA',
+                rsvp_status VARCHAR(20) DEFAULT 'Pending',
+                submission_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Fix the sequence to prevent duplicate key errors
+        # This ensures the sequence starts from the correct next value
+        cursor.execute('''
+            SELECT setval('guests_id_seq', COALESCE((SELECT MAX(id) FROM guests), 0), true)
+        ''')
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Database initialization failed: {e}")
+        return False
 
 def check_admin_credentials(username, password):
     """Check if provided credentials match admin credentials"""
@@ -182,16 +192,16 @@ def admin_logout():
     st.rerun()
 
 def save_guest_data(guest_data):
-    """Save guest data to SQLite database"""
+    """Save guest data to PostgreSQL database"""
     try:
-        conn = sqlite3.connect('wedding_guests.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute('''
             INSERT INTO guests (
                 first_name, last_name, email, phone, address_line1, address_line2,
                 city, state, zip_code, country
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (
             guest_data['first_name'],
             guest_data['last_name'],
@@ -215,7 +225,7 @@ def save_guest_data(guest_data):
 def get_all_guests():
     """Retrieve all guest data from database"""
     try:
-        conn = sqlite3.connect('wedding_guests.db')
+        conn = get_db_connection()
         df = pd.read_sql_query("SELECT * FROM guests ORDER BY submission_date DESC", conn)
         conn.close()
         return df
@@ -224,35 +234,43 @@ def get_all_guests():
         return pd.DataFrame()
 
 def validate_form(guest_data):
-    """Validate form data"""
+    """Validate the guest form data"""
     errors = []
     
     if not guest_data['first_name'].strip():
         errors.append("First name is required")
+    
     if not guest_data['last_name'].strip():
         errors.append("Last name is required")
+    
     if not guest_data['address_line1'].strip():
-        errors.append("Address is required")
+        errors.append("Address line 1 is required")
+    
     if not guest_data['city'].strip():
         errors.append("City is required")
-    if not guest_data['state'].strip():
+    
+    if not guest_data['state']:
         errors.append("State is required")
+    
     if not guest_data['zip_code'].strip():
         errors.append("ZIP code is required")
     
-    # Email validation
-    if guest_data['email'] and '@' not in guest_data['email']:
-        errors.append("Please enter a valid email address")
+    # Email validation (if provided)
+    if guest_data['email'].strip():
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, guest_data['email']):
+            errors.append("Please enter a valid email address")
     
     return errors
 
 def delete_guest_entry(guest_id):
     """Delete a guest entry from the database"""
     try:
-        conn = sqlite3.connect('wedding_guests.db')
+        conn = get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute("DELETE FROM guests WHERE id = ?", (guest_id,))
+        cursor.execute("DELETE FROM guests WHERE id = %s", (guest_id,))
         conn.commit()
         conn.close()
         return True
@@ -260,8 +278,29 @@ def delete_guest_entry(guest_id):
         st.error(f"Error deleting entry: {str(e)}")
         return False
 
+def show_success_screen():
+    """Display success message after form submission"""
+    st.markdown('<div class="success-container">', unsafe_allow_html=True)
+    st.markdown("# 🎉 Thank You!")
+    st.markdown(f"### Hi {st.session_state.get('submitted_guest_name', '')}!")
+    st.markdown("Your address has been successfully submitted.")
+    st.markdown("We'll be in touch soon with your wedding invitation! 💌")
+    
+    if st.button("✨ Submit Another Address", use_container_width=True):
+        # Reset form state
+        st.session_state['form_submitted'] = False
+        st.session_state['submitted_guest_name'] = ""
+        st.rerun()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
 # Main app
 def main():
+    # Initialize database
+    if not init_database():
+        st.error("Failed to initialize database. Please check your configuration.")
+        st.stop()
+    
     # Header
     st.markdown('<h1 class="main-header">💒 Wedding Guest Address Collection</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Please provide your address so we can send you your wedding invitation!</p>', unsafe_allow_html=True)
@@ -308,25 +347,6 @@ def main():
             show_export_options()
         else:
             st.error("🔒 Access denied. Please login as admin to export data.")
-
-def show_success_screen():
-    """Display success screen after form submission"""
-    st.markdown('<div class="success-screen">', unsafe_allow_html=True)
-    st.markdown('<div class="success-icon">🎉</div>', unsafe_allow_html=True)
-    st.markdown('<div class="success-title">Thank You!</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="success-text">Hi {st.session_state.submitted_guest_name}!<br><br>Your address has been successfully submitted.<br>We\'ll be in touch soon with your wedding invitation!</div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Add some spacing
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    # Button to submit another address
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        if st.button("📝 Submit Another Address", use_container_width=True):
-            st.session_state['form_submitted'] = False
-            st.session_state['submitted_guest_name'] = ""
-            st.rerun()
 
 def show_guest_form():
     """Display the guest address collection form"""
@@ -427,7 +447,8 @@ def show_responses():
         with col1:
             st.metric("Total Guests", len(df))
         with col2:
-            st.metric("Total Responses", len(df))
+            states_count = df['state'].nunique()
+            st.metric("States Represented", states_count)
         
         # Filter options
         st.subheader("Filter Responses")
@@ -435,7 +456,7 @@ def show_responses():
         with col1:
             search_name = st.text_input("Search by name", placeholder="Enter first or last name")
         with col2:
-            state_filter = st.selectbox("Filter by state", ["All"] + list(df['state'].unique()))
+            state_filter = st.selectbox("Filter by state", ["All"] + sorted(list(df['state'].unique())))
         
         # Apply filters
         filtered_df = df.copy()
@@ -533,13 +554,13 @@ def show_export_options():
     
     with col2:
         st.subheader("📊 Excel Export")
-        # Create Excel file
-        output = pd.ExcelWriter('temp_wedding_guests.xlsx', engine='openpyxl')
-        df.to_excel(output, index=False, sheet_name='Guest List')
-        output.close()
+        # Create Excel file in memory
+        from io import BytesIO
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Guest List')
         
-        with open('temp_wedding_guests.xlsx', 'rb') as f:
-            excel_data = f.read()
+        excel_data = output.getvalue()
         
         st.download_button(
             label="Download Excel",
@@ -547,10 +568,6 @@ def show_export_options():
             file_name=f"wedding_guests_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-    
-    # Clean up temporary file
-    if os.path.exists('temp_wedding_guests.xlsx'):
-        os.remove('temp_wedding_guests.xlsx')
     
     # Data preview
     st.subheader("📋 Data Preview")
